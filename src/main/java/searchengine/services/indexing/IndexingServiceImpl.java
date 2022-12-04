@@ -1,22 +1,22 @@
 package searchengine.services.indexing;
 
-import lombok.RequiredArgsConstructor;
-
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import searchengine.config.SiteFromList;
 import searchengine.config.SitesList;
+import searchengine.controllers.ApiController;
 import searchengine.model.Page;
 import searchengine.model.Site;
+import searchengine.model.enums.Status;
 import searchengine.model.mappers.MapperSite;
 import searchengine.repository.PageRepository;
 import searchengine.repository.SiteRepository;
+import searchengine.services.indexing.index_node.mapers.MapperIndexingNode;
 import searchengine.services.interfaces.IndexingService;
 
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
+import java.util.concurrent.*;
 
 @Service
 public class IndexingServiceImpl implements IndexingService {
@@ -34,18 +34,34 @@ public class IndexingServiceImpl implements IndexingService {
     }
 
 
-
     @Override
     public void startIndexing() {
         List<SiteFromList> sitesList = sites.getSites();
-        List<Thread> threads = new ArrayList<>();
+        ExecutorService service = Executors.newCachedThreadPool();
+        ForkJoinPool pool = new ForkJoinPool();
+        Set<Callable<Boolean>> sitesFromIndexing = new HashSet<>();
         for (int i = 0; i < sitesList.size(); i++) {
             Site site = MapperSite.map(sitesList.get(i).getUrl(), sitesList.get(i).getName(), 0);
             saveSite(site);
-            IndexingSiteService indexingSiteService = new IndexingSiteService(site, siteRepository, pageRepository);
-            threads.add(new Thread(indexingSiteService));
+            sitesFromIndexing.add(new Callable<Boolean>() {
+                @Override
+                public Boolean call() {
+                    SearchPageFromSite nodeRoot = new SearchPageFromSite(MapperIndexingNode.map(site), siteRepository, pageRepository);
+                    boolean result = pool.invoke(nodeRoot);
+                    if (result == true) {
+                        ApiController.INDEXING_CHECK = false;
+                        site.setStatus(Status.INDEXED);
+                        siteRepository.save(site);
+                    }
+               return true;
+                }
+            });
+            try {
+                service.invokeAll(sitesFromIndexing);
+            }catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
         }
-        threads.forEach(thread -> thread.start());
     }
 
 
